@@ -24,6 +24,7 @@ export const openapiSpec = {
     { name: 'Admin', description: 'Super-admin user management (requires SUPER_ADMIN)' },
     { name: 'Projects', description: 'Super-admin project configuration & user assignment (requires SUPER_ADMIN)' },
     { name: 'Folders', description: 'Nested folder tree within a project (super-admin or a project member, gated by per-project role)' },
+    { name: 'Test Cases', description: 'Test cases inside folders (super-admin or a project member, gated by per-project role)' },
   ],
   components: {
     securitySchemes: {
@@ -255,6 +256,55 @@ export const openapiSpec = {
         type: 'object',
         properties: { parentId: { type: 'string', nullable: true, description: 'null moves to root' } },
         required: ['parentId'],
+      },
+      TestStep: {
+        type: 'object',
+        properties: {
+          action: { type: 'string' },
+          expected: { type: 'string' },
+        },
+        required: ['action', 'expected'],
+      },
+      TestCase: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          title: { type: 'string' },
+          type: { type: 'string', enum: ['MANUAL', 'AUTOMATION'] },
+          folderId: { type: 'string' },
+          description: { type: 'string', nullable: true },
+          playwrightRef: { type: 'string', nullable: true },
+          isDeleted: { type: 'boolean' },
+          createdAt: { type: 'string', format: 'date-time' },
+          steps: { type: 'array', items: { $ref: '#/components/schemas/TestStep' } },
+        },
+        required: ['id', 'title', 'type', 'folderId', 'isDeleted', 'createdAt'],
+      },
+      TestCaseResponse: {
+        type: 'object',
+        properties: { testCase: { $ref: '#/components/schemas/TestCase' } },
+        required: ['testCase'],
+      },
+      TestCasesListResponse: {
+        type: 'object',
+        properties: { testCases: { type: 'array', items: { $ref: '#/components/schemas/TestCase' } } },
+        required: ['testCases'],
+      },
+      CreateTestCaseRequest: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', minLength: 1, maxLength: 200, example: 'Login with valid credentials' },
+          description: { type: 'string', maxLength: 2000 },
+          type: { type: 'string', enum: ['MANUAL', 'AUTOMATION'], default: 'MANUAL' },
+          playwrightRef: { type: 'string', maxLength: 500 },
+          steps: { type: 'array', items: { $ref: '#/components/schemas/TestStep' } },
+        },
+        required: ['title'],
+      },
+      MoveTestCaseRequest: {
+        type: 'object',
+        properties: { folderId: { type: 'string', description: 'Destination folder (same project)' } },
+        required: ['folderId'],
       },
     },
   },
@@ -617,6 +667,108 @@ export const openapiSpec = {
           '200': { description: 'Restored count', content: { 'application/json': { schema: { type: 'object', properties: { restoredCount: { type: 'integer' } } } } } },
           '409': { description: 'Parent still deleted', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
           '404': { description: 'Folder not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/folders/{folderId}/test-cases': {
+      get: {
+        tags: ['Test Cases'],
+        summary: "List a folder's test cases",
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'folderId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': { description: 'Test cases in the folder', content: { 'application/json': { schema: { $ref: '#/components/schemas/TestCasesListResponse' } } } },
+          '403': { description: 'Not a project member', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '404': { description: 'Folder not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+      post: {
+        tags: ['Test Cases'],
+        summary: 'Create a test case in a folder',
+        description: 'Requires a manage-capable project role (or super-admin).',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'folderId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateTestCaseRequest' } } } },
+        responses: {
+          '201': { description: 'Created test case', content: { 'application/json': { schema: { $ref: '#/components/schemas/TestCaseResponse' } } } },
+          '400': { description: 'Validation failed', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '403': { description: 'Role cannot manage test cases', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '404': { description: 'Folder not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/test-cases/{id}': {
+      get: {
+        tags: ['Test Cases'],
+        summary: 'Get a test case (with ordered steps)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': { description: 'Test case detail', content: { 'application/json': { schema: { $ref: '#/components/schemas/TestCaseResponse' } } } },
+          '404': { description: 'Test case not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+      patch: {
+        tags: ['Test Cases'],
+        summary: 'Update a test case (replaces steps)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/CreateTestCaseRequest' } } } },
+        responses: {
+          '200': { description: 'Updated test case', content: { 'application/json': { schema: { $ref: '#/components/schemas/TestCaseResponse' } } } },
+          '403': { description: 'Role cannot manage test cases', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '404': { description: 'Test case not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+      delete: {
+        tags: ['Test Cases'],
+        summary: 'Soft-delete a test case',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': { description: 'Deleted', content: { 'application/json': { schema: { type: 'object', properties: { message: { type: 'string' } } } } } },
+          '403': { description: 'Role cannot manage test cases', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '404': { description: 'Test case not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/test-cases/{id}/move': {
+      post: {
+        tags: ['Test Cases'],
+        summary: 'Move a test case to another folder',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { $ref: '#/components/schemas/MoveTestCaseRequest' } } } },
+        responses: {
+          '200': { description: 'Moved test case', content: { 'application/json': { schema: { $ref: '#/components/schemas/TestCaseResponse' } } } },
+          '400': { description: 'Destination in another project', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '404': { description: 'Test case or destination folder not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/test-cases/{id}/restore': {
+      post: {
+        tags: ['Test Cases'],
+        summary: 'Restore a soft-deleted test case',
+        description: 'Rejects (409) if the test case folder is still deleted.',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': { description: 'Restored test case', content: { 'application/json': { schema: { $ref: '#/components/schemas/TestCaseResponse' } } } },
+          '409': { description: 'Folder still deleted / not deleted', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+          '404': { description: 'Test case not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
+        },
+      },
+    },
+    '/projects/{projectId}/deleted-test-cases': {
+      get: {
+        tags: ['Test Cases'],
+        summary: 'List deleted test cases in a project (restore view)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'projectId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': { description: 'Deleted test cases', content: { 'application/json': { schema: { $ref: '#/components/schemas/TestCasesListResponse' } } } },
+          '404': { description: 'Project not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } },
         },
       },
     },

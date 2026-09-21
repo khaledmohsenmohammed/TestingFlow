@@ -40,7 +40,7 @@ export function AppLayout() {
             to="/"
             sx={{ flexGrow: 1, fontWeight: 700, color: 'inherit', textDecoration: 'none' }}
           >
-            KmmRepo
+            TestingFlow
           </Typography>
 
           {isAdmin && (

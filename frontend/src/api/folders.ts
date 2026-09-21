@@ -6,6 +6,8 @@ export interface FolderNode {
   parentId: string | null;
   isDeleted: boolean;
   createdAt: string;
+  // Direct, non-deleted test cases in this folder (subtree total computed client-side).
+  testCount: number;
   children: FolderNode[];
 }
 

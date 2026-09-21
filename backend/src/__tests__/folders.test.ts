@@ -86,6 +86,8 @@ vi.mock('../lib/prisma.js', () => ({
         ) ?? null,
     },
     folder: folderApi,
+    // listFolders aggregates per-folder test counts; no test cases in these tests.
+    testCase: { groupBy: async () => [] },
     // Transactions run the callback synchronously against the same fakes.
     $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ folder: folderApi }),
   },

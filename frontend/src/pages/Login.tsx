@@ -32,7 +32,7 @@ export default function Login() {
   });
 
   return (
-    <AuthShell title="Sign in to KmmRepo">
+    <AuthShell title="Sign in to TestingFlow">
       <Box
         component="form"
         onSubmit={handleSubmit((values) => {

@@ -1,4 +1,4 @@
-// KmmRepo Prisma schema.
+// TestingFlow Prisma schema.
 // Phase 1, slice 1: User only. Project / Folder / TestCase / AuditLog etc.
 // are added in later phases (see docs/DEVELOPMENT_GUIDE.md §7).
 
@@ -32,6 +32,11 @@ enum ProjectRole {
   MANUAL_TESTER
   PENTESTER
   PROJECT_LEAD
+}
+
+enum TestCaseType {
+  MANUAL
+  AUTOMATION
 }
 
 model User {
@@ -76,6 +81,7 @@ model Project {
 
   memberships ProjectMembership[]
   folders     Folder[]
+  testCases   TestCase[]
 
   @@map("projects")
 }
@@ -99,6 +105,7 @@ model Folder {
   // silently orphan/detach a subtree — the app only ever soft-deletes.
   parent    Folder?   @relation("FolderTree", fields: [parentId], references: [id], onDelete: Restrict)
   children  Folder[]  @relation("FolderTree")
+  testCases TestCase[]
 
   @@index([projectId])
   @@index([parentId])
@@ -119,4 +126,46 @@ model ProjectMembership {
   // A user holds at most one role per project.
   @@unique([userId, projectId])
   @@map("project_memberships")
+}
+
+model TestCase {
+  id            String       @id @default(cuid())
+  projectId     String
+  folderId      String
+  title         String
+  description   String?
+  type          TestCaseType @default(MANUAL)
+  playwrightRef String?
+  createdBy     String
+  createdAt     DateTime     @default(now())
+  updatedBy     String?
+  updatedAt     DateTime     @updatedAt
+
+  // Soft delete (steps stay, hidden with the case). Never hard-delete.
+  isDeleted     Boolean      @default(false)
+  deletedAt     DateTime?
+  deletedBy     String?
+
+  project       Project      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  folder        Folder       @relation(fields: [folderId], references: [id], onDelete: Restrict)
+  steps         TestStep[]
+
+  @@index([projectId])
+  @@index([folderId])
+  @@map("test_cases")
+}
+
+model TestStep {
+  id         String   @id @default(cuid())
+  testCaseId String
+  order      Int
+  action     String
+  expected   String
+
+  // Steps are wholly owned by the case (never soft-deleted or referenced on their
+  // own), so Cascade is correct here — the one exception to the app's Restrict rule.
+  testCase   TestCase @relation(fields: [testCaseId], references: [id], onDelete: Cascade)
+
+  @@index([testCaseId])
+  @@map("test_steps")
 }

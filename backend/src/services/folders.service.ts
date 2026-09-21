@@ -10,19 +10,23 @@ export interface FolderSummary {
   parentId: string | null;
   isDeleted: boolean;
   createdAt: Date;
+  // Direct, non-deleted test cases in this folder. The client sums over a
+  // subtree to show Xray's "direct (total)" count.
+  testCount: number;
 }
 
 export interface FolderNode extends FolderSummary {
   children: FolderNode[];
 }
 
-function toFolderSummary(folder: Folder): FolderSummary {
+function toFolderSummary(folder: Folder, testCount = 0): FolderSummary {
   return {
     id: folder.id,
     name: folder.name,
     parentId: folder.parentId,
     isDeleted: folder.isDeleted,
     createdAt: folder.createdAt,
+    testCount,
   };
 }
 
@@ -48,10 +52,10 @@ async function loadActiveParent(projectId: string, parentId: string): Promise<Fo
 }
 
 /** Builds a nested tree (roots with children[]) from a flat list of folders. */
-function buildTree(rows: Folder[]): FolderNode[] {
+function buildTree(rows: Folder[], testCounts: Map<string, number>): FolderNode[] {
   const byId = new Map<string, FolderNode>();
   for (const f of rows) {
-    byId.set(f.id, { ...toFolderSummary(f), children: [] });
+    byId.set(f.id, { ...toFolderSummary(f, testCounts.get(f.id) ?? 0), children: [] });
   }
   const roots: FolderNode[] = [];
   for (const f of rows) {
@@ -84,9 +88,16 @@ export async function listFolders(
     orderBy: [{ name: 'asc' }],
   });
   if (params.deleted) {
-    return { folders: rows.map(toFolderSummary) };
+    return { folders: rows.map((f) => toFolderSummary(f)) };
   }
-  return { tree: buildTree(rows) };
+  // One aggregate query for direct, non-deleted test-case counts per folder.
+  const grouped = await prisma.testCase.groupBy({
+    by: ['folderId'],
+    where: { projectId, isDeleted: false },
+    _count: { _all: true },
+  });
+  const testCounts = new Map(grouped.map((g) => [g.folderId, g._count._all]));
+  return { tree: buildTree(rows, testCounts) };
 }
 
 export async function createFolder(

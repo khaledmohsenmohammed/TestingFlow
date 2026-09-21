@@ -44,6 +44,15 @@ import {
   restoreFolder,
   type FolderNode,
 } from '../api/folders';
+import {
+  deleteTestCase,
+  listDeletedTestCases,
+  listFolderTestCases,
+  moveTestCase,
+  restoreTestCase,
+  type TestCase,
+} from '../api/testcases';
+import { TestCaseDialog } from './TestCaseDialog';
 
 const ROOT = '__root__';
 type Toast = { msg: string; severity: 'success' | 'error' };
@@ -76,21 +85,14 @@ function indexTree(tree: FolderNode[]): TreeIndex {
   return { byId, parentOf };
 }
 
-/** Total descendant folders under a node (excludes the node itself). */
-function descendantCount(node: FolderNode): number {
-  let total = 0;
-  const stack = [...node.children];
-  while (stack.length) {
-    const n = stack.pop()!;
-    total++;
-    stack.push(...n.children);
-  }
-  return total;
-}
-
 /** Xray-style `direct (total-in-subtree)` count label. */
 function countLabel(direct: number, total: number): string {
   return `${direct} (${total})`;
+}
+
+/** Total test cases in a folder's whole subtree (including itself). */
+function subtreeTestCount(node: FolderNode): number {
+  return node.testCount + node.children.reduce((a, c) => a + subtreeTestCount(c), 0);
 }
 
 function flatten(nodes: FolderNode[], excludeId?: string, depth = 0): { id: string; name: string; depth: number }[] {
@@ -120,8 +122,19 @@ export default function Folders() {
   const [moveTarget, setMoveTarget] = useState<FolderNode | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<FolderNode | null>(null);
 
+  // Test-case dialogs
+  const [tcDialog, setTcDialog] = useState<
+    { kind: 'create'; folderId: string } | { kind: 'edit'; id: string } | null
+  >(null);
+  const [tcMove, setTcMove] = useState<TestCase | null>(null);
+  const [tcDelete, setTcDelete] = useState<TestCase | null>(null);
+
   const onError = (err: unknown) => setToast({ msg: getApiErrorMessage(err), severity: 'error' });
   const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['folders', projectId] });
+  const invalidateTestCases = () => {
+    void queryClient.invalidateQueries({ queryKey: ['testcases'] });
+    invalidate(); // refresh the tree's test counts
+  };
 
   const { data: active, isLoading, isError, error } = useQuery({
     queryKey: ['folders', projectId, 'tree'],
@@ -154,7 +167,18 @@ export default function Folders() {
   };
 
   const selectedFolder = selectedId === ROOT ? null : byId.get(selectedId) ?? null;
-  const totalFolders = useMemo(() => tree.reduce((a, n) => a + 1 + descendantCount(n), 0), [tree]);
+
+  // Test cases of the selected folder (none at the virtual root).
+  const { data: testCases = [], isLoading: tcLoading } = useQuery({
+    queryKey: ['testcases', selectedFolder?.id],
+    queryFn: () => listFolderTestCases(selectedFolder!.id),
+    enabled: !!selectedFolder,
+  });
+  const { data: deletedCases = [] } = useQuery({
+    queryKey: ['testcases', 'deleted', projectId],
+    queryFn: () => listDeletedTestCases(projectId!),
+    enabled: !!projectId && view === 'DELETED',
+  });
 
   const path = useMemo(() => {
     const out: { id: string; name: string }[] = [];
@@ -169,7 +193,9 @@ export default function Folders() {
   }, [selectedFolder, byId, parentOf]);
 
   const contents = selectedId === ROOT ? tree : selectedFolder?.children ?? [];
-  const filtered = contents.filter((c) => c.name.toLowerCase().includes(search.trim().toLowerCase()));
+  const q = search.trim().toLowerCase();
+  const filtered = contents.filter((c) => c.name.toLowerCase().includes(q));
+  const filteredCases = testCases.filter((t) => t.title.toLowerCase().includes(q));
 
   const remove = useMutation({
     mutationFn: (id: string) => deleteFolder(projectId!, id),
@@ -189,6 +215,23 @@ export default function Folders() {
     onError,
   });
   const busy = remove.isPending || restore.isPending;
+
+  const removeCase = useMutation({
+    mutationFn: (id: string) => deleteTestCase(id),
+    onSuccess: () => {
+      invalidateTestCases();
+      setToast({ msg: 'Test case deleted', severity: 'success' });
+    },
+    onError,
+  });
+  const restoreCase = useMutation({
+    mutationFn: (id: string) => restoreTestCase(id),
+    onSuccess: () => {
+      invalidateTestCases();
+      setToast({ msg: 'Test case restored', severity: 'success' });
+    },
+    onError,
+  });
 
   const createUnderSelected = () => setCreateUnder({ parentId: selectedFolder?.id ?? null });
 
@@ -217,7 +260,7 @@ export default function Folders() {
               {open ? '📂' : '📁'} {node.name}
             </Typography>
             <Typography component="span" variant="body2" sx={{ color: 'text.secondary', ml: 1, whiteSpace: 'nowrap' }}>
-              {countLabel(node.children.length, descendantCount(node))}
+              {countLabel(node.testCount, subtreeTestCount(node))}
             </Typography>
           </Box>
         }
@@ -293,7 +336,7 @@ export default function Folders() {
                         {expanded.includes(ROOT) ? '📂' : '📁'} Test Repository
                       </Typography>
                       <Typography component="span" variant="body2" sx={{ color: 'text.secondary', ml: 1, whiteSpace: 'nowrap' }}>
-                        {countLabel(tree.length, totalFolders)}
+                        {countLabel(0, tree.reduce((a, n) => a + subtreeTestCount(n), 0))}
                       </Typography>
                     </Box>
                   }
@@ -327,10 +370,12 @@ export default function Folders() {
             {view === 'DELETED' ? (
               <DeletedPanel
                 folders={deletedData?.folders ?? []}
+                cases={deletedCases}
                 canManage={canManage}
-                busy={busy}
+                busy={busy || restoreCase.isPending}
                 onBack={() => setView('REPO')}
                 onRestore={(id) => restore.mutate(id)}
+                onRestoreCase={(id) => restoreCase.mutate(id)}
               />
             ) : (
               <>
@@ -353,6 +398,11 @@ export default function Folders() {
                   <Button size="small" variant="outlined" color="inherit" disabled>
                     Filters ▾
                   </Button>
+                  {canManage && selectedFolder && (
+                    <Button size="small" variant="contained" sx={{ ml: 'auto' }} onClick={() => setTcDialog({ kind: 'create', folderId: selectedFolder.id })}>
+                      + Test case
+                    </Button>
+                  )}
                 </Stack>
 
                 {/* Breadcrumb path (when not at root) */}
@@ -379,60 +429,120 @@ export default function Folders() {
                   </Box>
                 )}
 
-                <Stack direction="row" justifyContent="space-between" sx={{ px: 2, pb: 1 }}>
-                  <Typography variant="body2" color="text.secondary">
-                    Showing {filtered.length} of {contents.length} {contents.length === 1 ? 'folder' : 'folders'}
-                  </Typography>
-                  <Typography variant="body2" color="text.disabled">
-                    Test cases arrive in Phase 3
-                  </Typography>
-                </Stack>
-                <Divider />
-
-                {/* Entry list (subfolders as Xray-style cards) */}
-                <Box sx={{ flex: 1, overflow: 'auto', p: 1.5 }}>
-                  {filtered.length === 0 ? (
-                    <Box sx={{ p: 6, textAlign: 'center' }}>
-                      <Typography color="text.secondary">
-                        {contents.length === 0
-                          ? `No subfolders here.${canManage ? ' Use ＋ to add one.' : ''}`
-                          : 'No folders match your search.'}
-                      </Typography>
-                    </Box>
-                  ) : (
-                    <Stack spacing={1}>
-                      {filtered.map((c) => (
-                        <Paper
+                {/* Subfolder quick-nav chips (when a folder with subfolders is selected) */}
+                {selectedFolder && selectedFolder.children.length > 0 && (
+                  <Box sx={{ px: 2, pb: 1 }}>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      {selectedFolder.children.map((c) => (
+                        <Chip
                           key={c.id}
+                          label={`📁 ${c.name}`}
+                          size="small"
                           variant="outlined"
                           onClick={() => selectFolder(c.id)}
-                          sx={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            px: 2,
-                            py: 1.25,
-                            cursor: 'pointer',
-                            borderLeft: 4,
-                            borderLeftColor: 'primary.main',
-                            '&:hover': { bgcolor: 'action.hover' },
-                          }}
-                        >
-                          <Stack direction="row" spacing={1.5} alignItems="center">
-                            <Box component="span" sx={{ fontSize: 18 }}>📁</Box>
-                            <Box>
-                              <Typography fontWeight={500}>{c.name}</Typography>
-                              <Chip label="FOLDER" size="small" sx={{ height: 18, fontSize: 11, mt: 0.5 }} />
-                            </Box>
-                          </Stack>
-                          <Typography variant="body2" color="text.secondary">
-                            {countLabel(c.children.length, descendantCount(c))}
-                          </Typography>
-                        </Paper>
+                        />
                       ))}
                     </Stack>
-                  )}
-                </Box>
+                  </Box>
+                )}
+
+                {!selectedFolder ? (
+                  // Root: no direct test cases — show subfolders to drill into.
+                  <>
+                    <Stack direction="row" justifyContent="space-between" sx={{ px: 2, pb: 1 }}>
+                      <Typography variant="body2" color="text.secondary">
+                        Showing {filtered.length} of {contents.length} {contents.length === 1 ? 'folder' : 'folders'}
+                      </Typography>
+                      <Typography variant="body2" color="text.disabled">
+                        Select a folder to view its test cases
+                      </Typography>
+                    </Stack>
+                    <Divider />
+                    <Box sx={{ flex: 1, overflow: 'auto', p: 1.5 }}>
+                      {filtered.length === 0 ? (
+                        <Box sx={{ p: 6, textAlign: 'center' }}>
+                          <Typography color="text.secondary">
+                            {contents.length === 0
+                              ? `No folders yet.${canManage ? ' Use ＋ to add one.' : ''}`
+                              : 'No folders match your search.'}
+                          </Typography>
+                        </Box>
+                      ) : (
+                        <Stack spacing={1}>
+                          {filtered.map((c) => (
+                            <Paper
+                              key={c.id}
+                              variant="outlined"
+                              onClick={() => selectFolder(c.id)}
+                              sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1.25, cursor: 'pointer', borderLeft: 4, borderLeftColor: 'primary.main', '&:hover': { bgcolor: 'action.hover' } }}
+                            >
+                              <Stack direction="row" spacing={1.5} alignItems="center">
+                                <Box component="span" sx={{ fontSize: 18 }}>📁</Box>
+                                <Box>
+                                  <Typography fontWeight={500}>{c.name}</Typography>
+                                  <Chip label="FOLDER" size="small" sx={{ height: 18, fontSize: 11, mt: 0.5 }} />
+                                </Box>
+                              </Stack>
+                              <Typography variant="body2" color="text.secondary">
+                                {countLabel(c.testCount, subtreeTestCount(c))}
+                              </Typography>
+                            </Paper>
+                          ))}
+                        </Stack>
+                      )}
+                    </Box>
+                  </>
+                ) : (
+                  // Folder selected: test cases primary.
+                  <>
+                    <Stack direction="row" justifyContent="space-between" sx={{ px: 2, pb: 1 }}>
+                      <Typography variant="body2" color="text.secondary">
+                        Showing {filteredCases.length} of {testCases.length} test {testCases.length === 1 ? 'case' : 'cases'}
+                      </Typography>
+                    </Stack>
+                    <Divider />
+                    <Box sx={{ flex: 1, overflow: 'auto', p: 1.5 }}>
+                      {tcLoading ? (
+                        <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+                          <CircularProgress />
+                        </Box>
+                      ) : filteredCases.length === 0 ? (
+                        <Box sx={{ p: 6, textAlign: 'center' }}>
+                          <Typography color="text.secondary">
+                            {testCases.length === 0
+                              ? `No test cases in this folder.${canManage ? ' Use “+ Test case” to add one.' : ''}`
+                              : 'No test cases match your search.'}
+                          </Typography>
+                        </Box>
+                      ) : (
+                        <Stack spacing={1}>
+                          {filteredCases.map((tc) => (
+                            <Paper
+                              key={tc.id}
+                              variant="outlined"
+                              onClick={() => setTcDialog({ kind: 'edit', id: tc.id })}
+                              sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1.25, cursor: 'pointer', borderLeft: 4, borderLeftColor: tc.type === 'AUTOMATION' ? 'success.main' : 'info.main', '&:hover': { bgcolor: 'action.hover' } }}
+                            >
+                              <Stack direction="row" spacing={1.5} alignItems="center">
+                                <Box component="span" sx={{ fontSize: 18 }}>📄</Box>
+                                <Box>
+                                  <Typography fontWeight={500}>{tc.title}</Typography>
+                                  <Chip label={tc.type} size="small" sx={{ height: 18, fontSize: 11, mt: 0.5 }} />
+                                </Box>
+                              </Stack>
+                              {canManage && (
+                                <Stack direction="row" spacing={0.5} onClick={(e) => e.stopPropagation()}>
+                                  <Button size="small" onClick={() => setTcMove(tc)}>Move</Button>
+                                  <Button size="small" color="error" onClick={() => setTcDelete(tc)}>Delete</Button>
+                                </Stack>
+                              )}
+                            </Paper>
+                          ))}
+                        </Stack>
+                      )}
+                    </Box>
+                  </>
+                )}
               </>
             )}
           </Box>
@@ -482,7 +592,7 @@ export default function Folders() {
             setOverflowEl(null);
           }}
         >
-          {view === 'DELETED' ? 'Back to repository' : 'View deleted folders'}
+          {view === 'DELETED' ? 'Back to repository' : 'View deleted items'}
         </MenuItem>
       </Menu>
 
@@ -580,6 +690,64 @@ export default function Folders() {
         )}
       </Dialog>
 
+      {/* Test-case create / edit / view */}
+      {tcDialog && (
+        <TestCaseDialog
+          mode={tcDialog}
+          canManage={canManage}
+          onClose={() => setTcDialog(null)}
+          onSaved={(msg) => {
+            invalidateTestCases();
+            setTcDialog(null);
+            setToast({ msg, severity: 'success' });
+          }}
+          onError={onError}
+        />
+      )}
+
+      {/* Move a test case to another folder */}
+      {tcMove && (
+        <CaseMoveDialog
+          testCase={tcMove}
+          options={flatten(tree)}
+          onClose={() => setTcMove(null)}
+          onSubmit={(folderId) => moveTestCase(tcMove.id, folderId)}
+          onSaved={() => {
+            invalidateTestCases();
+            setTcMove(null);
+            setToast({ msg: 'Test case moved', severity: 'success' });
+          }}
+          onError={onError}
+        />
+      )}
+
+      {/* Delete a test case */}
+      <Dialog open={!!tcDelete} onClose={() => setTcDelete(null)}>
+        {tcDelete && (
+          <>
+            <DialogTitle>Delete test case</DialogTitle>
+            <DialogContent>
+              <DialogContentText>
+                Delete “{tcDelete.title}”? It moves to the Deleted view and can be restored.
+              </DialogContentText>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setTcDelete(null)}>Cancel</Button>
+              <Button
+                color="error"
+                variant="contained"
+                onClick={() => {
+                  removeCase.mutate(tcDelete.id);
+                  setTcDelete(null);
+                }}
+              >
+                Delete
+              </Button>
+            </DialogActions>
+          </>
+        )}
+      </Dialog>
+
       <Snackbar
         open={!!toast}
         autoHideDuration={3500}
@@ -598,31 +766,36 @@ export default function Folders() {
 
 function DeletedPanel({
   folders,
+  cases,
   canManage,
   busy,
   onBack,
   onRestore,
+  onRestoreCase,
 }: {
   folders: { id: string; name: string }[];
+  cases: { id: string; title: string }[];
   canManage: boolean;
   busy: boolean;
   onBack: () => void;
   onRestore: (id: string) => void;
+  onRestoreCase: (id: string) => void;
 }) {
+  const empty = folders.length === 0 && cases.length === 0;
   return (
     <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
         <Typography variant="subtitle2" color="text.secondary">
-          Deleted folders
+          Deleted items
         </Typography>
         <Button size="small" onClick={onBack}>
           ← Back to repository
         </Button>
       </Stack>
       <Divider sx={{ mb: 1 }} />
-      {folders.length === 0 ? (
+      {empty ? (
         <Box sx={{ p: 4, textAlign: 'center' }}>
-          <Typography color="text.secondary">No deleted folders.</Typography>
+          <Typography color="text.secondary">Nothing deleted.</Typography>
         </Box>
       ) : (
         <Stack spacing={1}>
@@ -633,10 +806,26 @@ function DeletedPanel({
               sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1 }}
             >
               <Typography component="span" color="text.secondary">
-                🗑 {f.name}
+                🗑 📁 {f.name}
               </Typography>
               {canManage && (
                 <Button size="small" disabled={busy} onClick={() => onRestore(f.id)}>
+                  Restore
+                </Button>
+              )}
+            </Paper>
+          ))}
+          {cases.map((c) => (
+            <Paper
+              key={c.id}
+              variant="outlined"
+              sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1 }}
+            >
+              <Typography component="span" color="text.secondary">
+                🗑 📄 {c.title}
+              </Typography>
+              {canManage && (
+                <Button size="small" disabled={busy} onClick={() => onRestoreCase(c.id)}>
                   Restore
                 </Button>
               )}
@@ -753,6 +942,65 @@ function MoveDialog({
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
         <Button variant="contained" disabled={mutation.isPending} onClick={() => mutation.mutate()}>
+          Move
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+/** Move a test case to another folder (a folder is required — no root option). */
+function CaseMoveDialog({
+  testCase,
+  options,
+  onClose,
+  onSubmit,
+  onSaved,
+  onError,
+}: {
+  testCase: TestCase;
+  options: { id: string; name: string; depth: number }[];
+  onClose: () => void;
+  onSubmit: (folderId: string) => Promise<unknown>;
+  onSaved: () => void;
+  onError: (err: unknown) => void;
+}) {
+  const [folderId, setFolderId] = useState<string>(testCase.folderId);
+
+  const mutation = useMutation({
+    mutationFn: () => onSubmit(folderId),
+    onSuccess: onSaved,
+    onError,
+  });
+
+  return (
+    <Dialog open onClose={onClose} fullWidth maxWidth="xs">
+      <DialogTitle>Move “{testCase.title}”</DialogTitle>
+      <DialogContent>
+        <FormControl fullWidth margin="dense">
+          <InputLabel id="case-move-folder">Destination folder</InputLabel>
+          <Select
+            labelId="case-move-folder"
+            label="Destination folder"
+            value={folderId}
+            onChange={(e) => setFolderId(e.target.value)}
+          >
+            {options.map((o) => (
+              <MenuItem key={o.id} value={o.id}>
+                {'  '.repeat(o.depth)}
+                {o.name}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button
+          variant="contained"
+          disabled={mutation.isPending || folderId === testCase.folderId}
+          onClick={() => mutation.mutate()}
+        >
           Move
         </Button>
       </DialogActions>

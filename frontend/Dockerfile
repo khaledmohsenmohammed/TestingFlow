@@ -9,12 +9,12 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 COPY frontend/package.json ./frontend/package.json
-RUN npm ci -w @kmmrepo/frontend --include-workspace-root
+RUN npm ci -w @testingflow/frontend --include-workspace-root
 
 COPY frontend ./frontend
 # Vite inlines env vars at build time; CI passes the backend Cloud Run URL here.
 ARG VITE_API_BASE_URL
-RUN VITE_API_BASE_URL="$VITE_API_BASE_URL" npm run build -w @kmmrepo/frontend
+RUN VITE_API_BASE_URL="$VITE_API_BASE_URL" npm run build -w @testingflow/frontend
 
 # ── Runtime ────────────────────────────────────────────────────────────────
 FROM nginx:alpine AS runtime
