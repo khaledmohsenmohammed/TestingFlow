@@ -1,4 +1,4 @@
-// KmmRepo Prisma schema.
+// TestingFlow Prisma schema.
 // Phase 1, slice 1: User only. Project / Folder / TestCase / AuditLog etc.
 // are added in later phases (see docs/DEVELOPMENT_GUIDE.md §7).
 

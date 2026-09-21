@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Multi-stage build for the KmmRepo backend.
+# Multi-stage build for the TestingFlow backend.
 # IMPORTANT: build context must be the REPO ROOT (not ./backend) because this is
 # an npm workspaces monorepo and the lockfile lives at the repo root.
 #   docker build -f backend/Dockerfile -t <image> .
@@ -15,15 +15,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl \
 # Install deps using the root lockfile, scoped to the backend workspace.
 COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/package.json
-RUN npm ci -w @kmmrepo/backend --include-workspace-root
+RUN npm ci -w @testingflow/backend --include-workspace-root
 
 # Generate the Prisma client, then compile TypeScript -> dist/.
 COPY backend/prisma ./backend/prisma
-RUN npm run prisma:generate -w @kmmrepo/backend
+RUN npm run prisma:generate -w @testingflow/backend
 COPY backend/tsconfig.json backend/tsconfig.build.json ./backend/
 COPY backend/src ./backend/src
 # build:prod uses tsconfig.build.json which excludes src/__tests__ from dist.
-RUN npm run build:prod -w @kmmrepo/backend
+RUN npm run build:prod -w @testingflow/backend
 
 # NOTE: dev deps are intentionally kept — the runtime CMD shells out to the
 # `prisma` CLI (a devDependency) for `migrate deploy` on container start.

@@ -3,7 +3,7 @@ import type { PaletteMode } from '@mui/material';
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 import { buildTheme } from './theme';
 
-const STORAGE_KEY = 'kmm-color-mode';
+const STORAGE_KEY = 'testingflow-color-mode';
 
 interface ColorModeContextValue {
   mode: PaletteMode;

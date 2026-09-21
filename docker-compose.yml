@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:15
-    container_name: kmmrepo-postgres
+    container_name: testingflow-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: kmmrepo
@@ -19,7 +19,7 @@ services:
 
   redis:
     image: redis:7
-    container_name: kmmrepo-redis
+    container_name: testingflow-redis
     restart: unless-stopped
     ports:
       - "6379:6379"

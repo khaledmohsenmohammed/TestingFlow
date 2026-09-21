@@ -27,7 +27,7 @@ export function createApp() {
   app.use(
     '/api/v1/docs',
     swaggerUi.serve,
-    swaggerUi.setup(openapiSpec, { customSiteTitle: 'KmmRepo API Docs' }),
+    swaggerUi.setup(openapiSpec, { customSiteTitle: 'TestingFlow API Docs' }),
   );
 
   app.use('/api/v1', routes);
